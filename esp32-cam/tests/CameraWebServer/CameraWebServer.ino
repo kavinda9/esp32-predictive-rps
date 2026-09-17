@@ -9,7 +9,7 @@
 // Enter your WiFi credentials
 // ===========================
 const char *ssid = "Dialog 4G 026";
-const char *password = "93876B52";
+const char *password = "password";
 
 void startCameraServer();
 
