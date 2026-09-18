@@ -5,6 +5,7 @@
 #include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "esp_heap_caps.h"
 
 #define IMG_WIDTH 96
 #define IMG_HEIGHT 96
@@ -14,12 +15,20 @@ tflite::MicroInterpreter* interpreter = nullptr;
 TfLiteTensor* input = nullptr;
 TfLiteTensor* output = nullptr;
 
-constexpr int kTensorArenaSize = 60 * 1024;
-alignas(16) uint8_t tensor_arena[kTensorArenaSize];
+constexpr int kTensorArenaSize = 200 * 1024;  // generous, since it lives in PSRAM
+uint8_t *tensor_arena = nullptr;
 
 void setup() {
   Serial.begin(115200);
   Serial.println();
+
+  // ===== Allocate tensor arena in PSRAM =====
+  tensor_arena = (uint8_t *)heap_caps_malloc(kTensorArenaSize, MALLOC_CAP_SPIRAM);
+  if (tensor_arena == nullptr) {
+    Serial.println("Failed to allocate tensor arena in PSRAM!");
+    while (true);
+  }
+  Serial.println("Tensor arena allocated in PSRAM successfully.");
 
   // ===== Camera setup =====
   camera_config_t config;
