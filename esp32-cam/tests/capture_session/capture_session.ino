@@ -3,11 +3,10 @@
 #include "SD_MMC.h"
 #include "FS.h"
 
-#define MOTION_THRESHOLD 15
-#define MOTION_PIXEL_PERCENT 2.0
-#define BURST_DURATION_MS 1500
-#define FRAME_INTERVAL_MS 100
-#define STILLNESS_REQUIRED_MS 800  // must be still this long before re-arming
+#define MOTION_TRIGGER_PERCENT 70.0   // must exceed this to START a session
+#define BURST_DURATION_MS 4000        // capture for this long once triggered
+#define FRAME_INTERVAL_MS 100         // one frame every 100ms (~40 frames per session)
+#define COOLDOWN_MS 10000             // ignore everything for this long after a session
 
 uint8_t *prevFrame = NULL;
 size_t frameSize = 0;
@@ -15,8 +14,10 @@ int frameWidth = 0;
 int frameHeight = 0;
 
 int sessionNumber = 0;
-bool captureArmed = true;
-unsigned long lastMotionTime = 0;
+
+enum State { IDLE, COOLDOWN };
+State currentState = IDLE;
+unsigned long cooldownStart = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -57,14 +58,13 @@ void setup() {
   frameWidth = 160;
   frameHeight = 120;
 
-  // Init SD card (1-bit mode, standard for AI-Thinker ESP32-CAM)
   if (!SD_MMC.begin("/sdcard", true)) {
     Serial.println("SD Card Mount Failed");
     return;
   }
   Serial.println("SD Card mounted.");
 
-  Serial.println("Ready. Hold hand still, then move to trigger a capture session.");
+  Serial.println("Ready. Make a big, deliberate motion (>70% change) to start a session.");
 }
 
 void savePGM(uint8_t *data, size_t len, int sessionNum, int frameNum) {
@@ -77,7 +77,6 @@ void savePGM(uint8_t *data, size_t len, int sessionNum, int frameNum) {
     return;
   }
 
-  // PGM header: P5 (binary grayscale), width, height, max value
   file.printf("P5\n%d %d\n255\n", frameWidth, frameHeight);
   file.write(data, len);
   file.close();
@@ -87,7 +86,7 @@ void savePGM(uint8_t *data, size_t len, int sessionNum, int frameNum) {
 
 void runCaptureBurst() {
   sessionNumber++;
-  Serial.printf("=== Starting capture session %d ===\n", sessionNumber);
+  Serial.printf("=== TRIGGERED! Starting capture session %d ===\n", sessionNumber);
 
   unsigned long burstStart = millis();
   int frameNum = 0;
@@ -103,10 +102,28 @@ void runCaptureBurst() {
   }
 
   Serial.printf("=== Session %d complete: %d frames captured ===\n", sessionNumber, frameNum);
-  Serial.println("Hold still to re-arm capture...");
+  Serial.println("Entering 10s cooldown...");
+
+  currentState = COOLDOWN;
+  cooldownStart = millis();
 }
 
 void loop() {
+  // Handle cooldown state — ignore everything until it ends
+  if (currentState == COOLDOWN) {
+    if (millis() - cooldownStart >= COOLDOWN_MS) {
+      currentState = IDLE;
+      // Reset prevFrame so we don't compare against a stale frame from before cooldown
+      free(prevFrame);
+      prevFrame = NULL;
+      Serial.println("Cooldown finished. Ready for next session.");
+    } else {
+      delay(50); // small delay while waiting out cooldown, avoids busy-spinning
+      return;
+    }
+  }
+
+  // IDLE state — watch for a big motion trigger
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("Camera capture failed");
@@ -124,7 +141,7 @@ void loop() {
   int changedPixels = 0;
   for (size_t i = 0; i < frameSize; i++) {
     int diff = abs((int)fb->buf[i] - (int)prevFrame[i]);
-    if (diff > MOTION_THRESHOLD) {
+    if (diff > 15) {  // per-pixel brightness change threshold
       changedPixels++;
     }
   }
@@ -133,21 +150,7 @@ void loop() {
   memcpy(prevFrame, fb->buf, frameSize);
   esp_camera_fb_return(fb);
 
-  unsigned long now = millis();
-
-  if (percentChanged > MOTION_PIXEL_PERCENT) {
-    lastMotionTime = now;
-
-    if (captureArmed) {
-      captureArmed = false;
-      runCaptureBurst();
-      lastMotionTime = millis(); // reset stillness timer after burst
-    }
-  } else {
-    // No motion this frame — check if we've been still long enough to re-arm
-    if (!captureArmed && (now - lastMotionTime > STILLNESS_REQUIRED_MS)) {
-      captureArmed = true;
-      Serial.println("Re-armed. Ready for next session.");
-    }
+  if (percentChanged > MOTION_TRIGGER_PERCENT) {
+    runCaptureBurst();
   }
 }
