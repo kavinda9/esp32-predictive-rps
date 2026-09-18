@@ -15,7 +15,7 @@ tflite::MicroInterpreter* interpreter = nullptr;
 TfLiteTensor* input = nullptr;
 TfLiteTensor* output = nullptr;
 
-constexpr int kTensorArenaSize = 200 * 1024;  // generous, since it lives in PSRAM
+constexpr int kTensorArenaSize = 200 * 1024;  // lives in PSRAM
 uint8_t *tensor_arena = nullptr;
 
 void setup() {
@@ -114,13 +114,22 @@ void loop() {
     return;
   }
 
-  // Dequantize output scores
+  // Dequantize output scores (3 classes: rock, paper, scissors)
   float rockScore = (output->data.int8[0] - output->params.zero_point) * output->params.scale;
   float paperScore = (output->data.int8[1] - output->params.zero_point) * output->params.scale;
+  float scissorsScore = (output->data.int8[2] - output->params.zero_point) * output->params.scale;
 
-  Serial.printf("Rock: %.3f  Paper: %.3f  -> %s\n",
-                rockScore, paperScore,
-                rockScore > paperScore ? "ROCK" : "PAPER");
+  String result;
+  if (rockScore >= paperScore && rockScore >= scissorsScore) {
+    result = "ROCK";
+  } else if (paperScore >= rockScore && paperScore >= scissorsScore) {
+    result = "PAPER";
+  } else {
+    result = "SCISSORS";
+  }
+
+  Serial.printf("Rock: %.3f  Paper: %.3f  Scissors: %.3f  -> %s\n",
+                rockScore, paperScore, scissorsScore, result.c_str());
 
   delay(1000);
 }
