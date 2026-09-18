@@ -14,7 +14,7 @@ tflite::MicroInterpreter* interpreter = nullptr;
 TfLiteTensor* input = nullptr;
 TfLiteTensor* output = nullptr;
 
-constexpr int kTensorArenaSize = 130 * 1024;
+constexpr int kTensorArenaSize = 60 * 1024;
 alignas(16) uint8_t tensor_arena[kTensorArenaSize];
 
 void setup() {
