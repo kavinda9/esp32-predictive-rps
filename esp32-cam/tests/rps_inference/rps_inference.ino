@@ -1,15 +1,21 @@
 #include "esp_camera.h"
 #include "board_config.h"
-#include <ArduTFLite.h>
+#include <Chirale_TensorFlowLite.h>
 #include "rps_model.h"
+#include "tensorflow/lite/micro/all_ops_resolver.h"
+#include "tensorflow/lite/micro/micro_interpreter.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
-// Model input size (must match training: 96x96 grayscale)
 #define IMG_WIDTH 96
 #define IMG_HEIGHT 96
 
-// Tensor arena — working memory for the model. Start here, increase if it fails.
+const tflite::Model* model = nullptr;
+tflite::MicroInterpreter* interpreter = nullptr;
+TfLiteTensor* input = nullptr;
+TfLiteTensor* output = nullptr;
+
 constexpr int kTensorArenaSize = 130 * 1024;
-alignas(16) uint8_t tensorArena[kTensorArenaSize];
+alignas(16) uint8_t tensor_arena[kTensorArenaSize];
 
 void setup() {
   Serial.begin(115200);
@@ -36,7 +42,7 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 10000000;
-  config.frame_size = FRAMESIZE_96X96;       // capture directly at model's input size
+  config.frame_size = FRAMESIZE_96X96;
   config.pixel_format = PIXFORMAT_GRAYSCALE;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_DRAM;
@@ -50,11 +56,29 @@ void setup() {
   Serial.println("Camera ready.");
 
   // ===== TFLite Micro setup =====
-  Serial.println("Initializing TFLite model...");
-  if (!modelInit(rps_model, tensorArena, kTensorArenaSize)) {
-    Serial.println("Model initialization failed!");
-    return;
+  Serial.println("Initializing TensorFlow Lite Micro Interpreter...");
+
+  model = tflite::GetModel(rps_model);
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    Serial.println("Model provided and schema version are not equal!");
+    while (true);
   }
+
+  static tflite::AllOpsResolver resolver;
+
+  static tflite::MicroInterpreter static_interpreter(
+      model, resolver, tensor_arena, kTensorArenaSize);
+  interpreter = &static_interpreter;
+
+  TfLiteStatus allocate_status = interpreter->AllocateTensors();
+  if (allocate_status != kTfLiteOk) {
+    Serial.println("AllocateTensors() failed");
+    while (true);
+  }
+
+  input = interpreter->input(0);
+  output = interpreter->output(0);
+
   Serial.println("Model ready. Starting inference loop.");
 }
 
@@ -66,27 +90,28 @@ void loop() {
     return;
   }
 
-  // Feed each pixel into the model's input tensor
-  // Model expects int8 quantized input: convert 0-255 grayscale -> -128 to 127
+  // Quantize each pixel (0-255 grayscale) into the model's input tensor
   for (int i = 0; i < IMG_WIDTH * IMG_HEIGHT; i++) {
-    int8_t pixelValue = (int8_t)((int)fb->buf[i] - 128);
-    modelSetInput(pixelValue, i);
+    float pixelNormalized = fb->buf[i] / 255.0;
+    input->data.int8[i] = (int8_t)(pixelNormalized / input->params.scale + input->params.zero_point);
   }
 
   esp_camera_fb_return(fb);
 
-  if (!modelRunInference()) {
-    Serial.println("Inference failed!");
+  TfLiteStatus invoke_status = interpreter->Invoke();
+  if (invoke_status != kTfLiteOk) {
+    Serial.println("Invoke failed!");
     delay(500);
     return;
   }
 
-  float rockScore = modelGetOutput(0);
-  float paperScore = modelGetOutput(1);
+  // Dequantize output scores
+  float rockScore = (output->data.int8[0] - output->params.zero_point) * output->params.scale;
+  float paperScore = (output->data.int8[1] - output->params.zero_point) * output->params.scale;
 
-  Serial.printf("Rock: %.2f  Paper: %.2f  -> %s\n",
+  Serial.printf("Rock: %.3f  Paper: %.3f  -> %s\n",
                 rockScore, paperScore,
                 rockScore > paperScore ? "ROCK" : "PAPER");
 
-  delay(1000); // one prediction per second for now, easy to read in Serial Monitor
+  delay(1000);
 }
